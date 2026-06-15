@@ -278,5 +278,8 @@ pyrightconfig.json
 .history
 .ionide
 
+# Data file
+data/*
+
 # End of https://www.toptal.com/developers/gitignore/api/python,flask,visualstudiocode
 
