@@ -11,6 +11,17 @@ so a player must excel across all dimensions to earn maximum EXP.
 The multiplication model means: excelling in one area cannot fully
 compensate for terrible performance in another. A player who was
 lightning-fast but took severe damage earns moderate EXP — not maximum.
+
+STARS:
+The composite multiplier is also mapped to a 1–5 star rating that is
+returned alongside the verdict and displayed in the Result UI and the
+Level Progression panel:
+  5 stars — composite ≥ 0.75  (Masterful)
+  4 stars — composite ≥ 0.50  (Excellent)
+  3 stars — composite ≥ 0.30  (Passable)
+  2 stars — composite ≥ 0.15  (Barely Survived)
+  1 star  — composite < 0.15  (scraped through)
+  0 stars — failed run (no stars awarded)
 """
 
 import math
@@ -126,6 +137,32 @@ def compute_par_time(rows: int, cols: int) -> int:
     return int(expected_path_length * seconds_per_step)
 
 
+def composite_to_stars(composite: float) -> int:
+    """
+    Maps the composite performance multiplier to a 1–5 star count.
+
+    The star thresholds mirror the verdict thresholds and add a 1-star floor
+    so that any successful completion always earns at least 1 star.
+
+    composite ≥ 0.75 → 5 stars  (Masterful)
+    composite ≥ 0.50 → 4 stars  (Excellent)
+    composite ≥ 0.30 → 3 stars  (Passable)
+    composite ≥ 0.15 → 2 stars  (Barely Survived)
+    composite <  0.15 → 1 star  (Just made it)
+    failed            → 0 stars (no stars for defeat)
+    """
+    if composite >= 0.75:
+        return 5
+    elif composite >= 0.50:
+        return 4
+    elif composite >= 0.30:
+        return 3
+    elif composite >= 0.15:
+        return 2
+    else:
+        return 1
+
+
 def calculate_exp_reward(
     difficulty: float,
     elapsed_seconds: int,
@@ -141,11 +178,11 @@ def calculate_exp_reward(
     Master EXP calculation function.
 
     FAILURE HANDLING:
-    If the player's Integrity hits 0%, `failed=True`. They earn 0 EXP.
+    If the player's Integrity hits 0%, `failed=True`. They earn 0 EXP and 0 stars.
     Currencies collected BEFORE death are retained (handled at API level).
 
     Returns a structured dict with the raw EXP value, all multiplier
-    components, performance verdict, and bonus gold eligibility flag.
+    components, performance verdict, star rating, and bonus gold eligibility flag.
     """
 
     # ── FAILURE STATE ──────────────────────────────────────────────────────
@@ -154,6 +191,7 @@ def calculate_exp_reward(
             "exp_earned": 0,
             "failed": True,
             "verdict": "Defeated",
+            "stars_earned": 0,
             "breakdown": {
                 "base_exp": 0,
                 "time_multiplier": 0,
@@ -192,6 +230,9 @@ def calculate_exp_reward(
     else:
         verdict = "Barely Survived"
 
+    # ── STAR RATING ───────────────────────────────────────────────────────
+    stars_earned = composite_to_stars(composite)
+
     # ── FLAWLESS BONUS GOLD ELIGIBILITY ───────────────────────────────────
     # Bonus gold (shown separately in Results UI) if zero damage taken
     flawless = (integrity_lost_pct == 0.0)
@@ -200,6 +241,7 @@ def calculate_exp_reward(
         "exp_earned": exp_earned,
         "failed": False,
         "verdict": verdict,
+        "stars_earned": stars_earned,
         "breakdown": {
             "base_exp": base_exp,
             "time_multiplier": t_mult,

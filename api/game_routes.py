@@ -9,6 +9,12 @@ WHY SEPARATE FROM PLAYER ROUTES:
 Game actions mutate multiple profile fields atomically (EXP + gold + history).
 Isolating these in game_routes.py makes the transactional logic clear
 and prevents accidental partial-updates from generic profile endpoints.
+
+STARS:
+On a successful run, the backend calculates stars_earned (1–5) and stores the
+BEST star rating ever achieved for each level number under
+profile["level_stars"][str(level_number)]. The frontend reads this from the
+player profile to display earned stars in the Level Progression Panel.
 """
 
 import math
@@ -99,7 +105,8 @@ def complete_level():
       3. Credits collected currencies
       4. Applies defeat penalty (gold loss) if failed
       5. Appends EXP to history (for the line graph)
-      6. Saves all changes in a single write
+      6. Stores the best star rating for the completed level number
+      7. Saves all changes in a single write
 
     Body:
     {
@@ -119,7 +126,8 @@ def complete_level():
 
     Returns:
       EXP calculation breakdown, updated currency totals, performance verdict,
-      and the data needed to render the Game Result UI.
+      stars_earned (1–5, or 0 on defeat), and the data needed to render the
+      Game Result UI.
     """
     body = request.get_json(silent=True) or {}
 
@@ -165,6 +173,7 @@ def complete_level():
     )
 
     exp_earned = exp_result["exp_earned"]
+    stars_earned = exp_result["stars_earned"]  # 0 on defeat, 1–5 on success
 
     # ── CURRENCY DELTA ───────────────────────────────────────────────────
     bonus_gold = 0
@@ -187,10 +196,24 @@ def complete_level():
     new_gold = max(0, profile.get("gold", 0) + net_gold_gain - gold_penalty)
     new_diamonds = profile.get("diamonds", 0) + diamonds_collected
 
+    # ── STAR TRACKING ─────────────────────────────────────────────────────
+    # We track the BEST star rating achieved per level so the Level Progression
+    # Panel can display it. The level the player JUST played is the current_level
+    # (before any EXP-induced level-up from this run).
+    current_level = exp_to_level(profile.get("total_exp", 0))
+    level_stars = dict(profile.get("level_stars", {}))
+
+    if not failed and stars_earned > 0:
+        level_key = str(current_level)
+        existing_best = level_stars.get(level_key, 0)
+        if stars_earned > existing_best:
+            level_stars[level_key] = stars_earned
+
     updates = {
         "total_exp": new_total_exp,
         "gold": new_gold,
         "diamonds": new_diamonds,
+        "level_stars": level_stars,
     }
     updated_profile = update_profile(player_id, updates)
 
@@ -208,6 +231,7 @@ def complete_level():
             "failed": failed,
             "verdict": exp_result["verdict"],
             "exp_earned": exp_earned,
+            "stars_earned": stars_earned,
             "exp_breakdown": exp_result["breakdown"],
             "gold_collected": gold_collected,
             "bonus_gold": bonus_gold,
@@ -221,6 +245,7 @@ def complete_level():
             "gold": new_gold,
             "diamonds": new_diamonds,
             "exp_history": updated_profile.get("exp_history", []),
+            "level_stars": level_stars,
         },
     })
 

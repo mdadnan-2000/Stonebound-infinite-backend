@@ -53,6 +53,7 @@ def get(player_id: str):
     - Level, EXP, Gold, Diamonds
     - Upgrade levels (integrity, velocity, freeze spell)
     - exp_history (for the line graph)
+    - level_stars (dict of level_number -> best star count, for progression panel)
     - Identity (name, avatar frame)
     """
     profile = get_profile(player_id)
@@ -139,6 +140,10 @@ def _enrich_profile(profile: dict) -> dict:
     total_exp changes, but someone forgets to update current_level.
     Computing them from the source of truth (total_exp) on every read
     guarantees consistency.
+
+    level_stars is a dict mapping level number (as string) to the best
+    star count (1–5) ever achieved on that level. It is passed through
+    directly from the stored profile (default empty dict).
     """
     total_exp = profile.get("total_exp", 0)
     current_level = exp_to_level(total_exp)
@@ -154,4 +159,6 @@ def _enrich_profile(profile: dict) -> dict:
         "exp_in_current_level": exp_in_level,
         "exp_to_next_level": exp_needed,
         "next_level_total_exp": next_level_exp,
+        # Star ratings per completed level (stored, passed through as-is)
+        "level_stars": profile.get("level_stars", {}),
     }
