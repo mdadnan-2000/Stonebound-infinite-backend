@@ -11,6 +11,16 @@ for every possible level number, we use a mathematical pipeline:
 
 The Difficulty Float acts as a universal "heat dial" that every system reads from.
 This means adding new mechanics later just means reading the same dial — no refactoring needed.
+
+LEVEL REPLAY SUPPORT:
+`generate_level_parameters` now accepts an optional `replay_level` override. When
+provided, the difficulty dial is derived directly from that historical level number
+(via `level_to_difficulty`) instead of from the player's current total EXP. This is
+what guarantees a replayed level is generated with EXACTLY the same maze-complexity
+parameters (grid size, loop factor, dead-end frequency, hazard density) it had the
+first time the player faced it — fulfilling the "Fixed Environment Complexity" rule.
+The player's CURRENT upgrades (velocity, integrity, freeze spells) are layered on top
+via `player_snapshot` in the API layer, untouched by this module.
 """
 
 import math
@@ -69,24 +79,35 @@ def exp_to_level(total_exp: int) -> int:
     return level
 
 
+def level_to_difficulty(level: int) -> float:
+    """
+    Converts a raw LEVEL NUMBER directly into a normalized difficulty float
+    in [0.0, 1.0], independent of any particular player's total EXP.
+
+    WHY THIS EXISTS (separate from `exp_to_difficulty`):
+    Difficulty has always been a pure function of level number — `exp_to_difficulty`
+    only adds the EXP->level lookup on top. Exposing this directly lets the
+    Level Replay feature recompute the EXACT original difficulty for a level
+    number a player has already passed, without needing their current EXP at all.
+
+    WHY LOGARITHMIC:
+    Log curves feel "natural" for progression — early levels scale fast,
+    late levels feel like grinding toward a ceiling. This matches player expectations.
+    """
+    raw = math.log1p(max(1, level)) / math.log1p(DIFFICULTY_SOFT_CAP_LEVEL)
+    return min(raw, DIFFICULTY_HARD_CAP)
+
+
 def exp_to_difficulty(total_exp: int) -> float:
     """
     Converts raw EXP into a normalized difficulty float in [0.0, 1.0].
 
     APPROACH:
     1. Map EXP -> level number.
-    2. Apply a logarithmic decay to "compress" high levels toward the soft cap,
-       preventing sudden difficulty spikes.
-    3. Clamp to [0.0, HARD_CAP].
-
-    WHY LOGARITHMIC:
-    Log curves feel "natural" for progression — early levels scale fast,
-    late levels feel like grinding toward a ceiling. This matches player expectations.
+    2. Delegate to `level_to_difficulty` for the log-smoothing step.
     """
     level = exp_to_level(total_exp)
-    # Normalize: level relative to the soft cap, log-smoothed
-    raw = math.log1p(level) / math.log1p(DIFFICULTY_SOFT_CAP_LEVEL)
-    return min(raw, DIFFICULTY_HARD_CAP)
+    return level_to_difficulty(level)
 
 
 def difficulty_to_threat_rating(difficulty: float) -> str:
@@ -102,7 +123,7 @@ def difficulty_to_threat_rating(difficulty: float) -> str:
     return rating
 
 
-def generate_level_parameters(total_exp: int) -> dict:
+def generate_level_parameters(total_exp: int, replay_level: int = None) -> dict:
     """
     Master function: given a player's total EXP, returns the full
     set of parameters needed to generate the next maze level.
@@ -112,9 +133,24 @@ def generate_level_parameters(total_exp: int) -> dict:
 
     Returns a structured dict consumed by the maze generator and
     passed through the API to the Loading Screen UI.
+
+    LEVEL REPLAY OVERRIDE:
+    If `replay_level` is provided, the difficulty dial (and therefore every
+    derived parameter — grid size, dead ends, loops, loot, hazards) is computed
+    from THAT level number instead of the player's current progression. This is
+    the single source of truth that guarantees a replay's "Fixed Environment
+    Complexity" exactly matches what the level originally was, with no
+    hardcoded per-level tables. The standard (non-replay) progression path
+    below is completely untouched.
     """
-    difficulty = exp_to_difficulty(total_exp)
-    level_number = exp_to_level(total_exp) + 1  # Next level to play
+    if replay_level is not None:
+        # ── REPLAY PATH: difficulty pinned to the historical level number ──
+        difficulty = level_to_difficulty(replay_level)
+        level_number = replay_level
+    else:
+        # ── STANDARD PROGRESSION PATH (unchanged) ──────────────────────────
+        difficulty = exp_to_difficulty(total_exp)
+        level_number = exp_to_level(total_exp) + 1  # Next level to play
 
     # ── GRID SIZE ──────────────────────────────────────────────────────────
     # Starts at 10x10 (tiny, tutorial) and scales up to 40x40 (massive arena).
@@ -145,6 +181,9 @@ def generate_level_parameters(total_exp: int) -> dict:
     # ── LOOT AMOUNTS ───────────────────────────────────────────────────────
     # More gold at higher difficulty to compensate for the harder challenge.
     # Diamonds are rarer and scale more slowly.
+    # NOTE: For Level Replay runs, the API layer (game_routes.py) zeroes these
+    # out AFTER this function returns — implementing the "Empty Maze" rule
+    # without duplicating or hardcoding any of the scaling math here.
     gold_count = int(5 + 30 * difficulty)
     diamond_count = int(0 + 5 * difficulty)
 

@@ -22,6 +22,13 @@ Level Progression panel:
   2 stars — composite ≥ 0.15  (Barely Survived)
   1 star  — composite < 0.15  (scraped through)
   0 stars — failed run (no stars awarded)
+
+LEVEL REPLAY — STAR BOUNTY:
+`calculate_star_bounty` is the SINGLE authoritative formula for the gold
+payout awarded when a player beats their historic best star rating on a
+replayed level (see api/game_routes.py). It is intentionally isolated here,
+next to the rest of the performance-economy math, rather than hardcoded
+inline in the route — so it stays consistent, testable, and easy to retune.
 """
 
 import math
@@ -47,6 +54,18 @@ MULTIPLIER_CEIL  = 1.0   # Best possible multiplier per axis (1.0 = no bonus)
 FLAWLESS_BOMB_AVOIDANCE = True   # No bomb damage at all
 FLAWLESS_DAMAGE_THRESHOLD = 0.0  # Zero integrity lost
 FLAWLESS_BONUS_GOLD_PCT = 0.30   # +30% of collected gold as bonus
+
+
+# ──────────────────────────────────────────────
+# STAR BOUNTY CONSTANTS (Level Replay)
+# ──────────────────────────────────────────────
+# Base gold awarded per EXTRA star earned beyond the player's historic best.
+BOUNTY_GOLD_PER_STAR = 60
+# The original level's difficulty scales the payout — replaying (and mastering)
+# a level that was originally harder is worth more, even though it's now easy
+# for a higher-level player. Range: 1.0x (easiest levels) to 2.0x (hardest).
+BOUNTY_DIFFICULTY_MULTIPLIER_MIN = 1.0
+BOUNTY_DIFFICULTY_MULTIPLIER_MAX = 2.0
 
 
 def _time_multiplier(elapsed_seconds: int, par_time_seconds: int) -> float:
@@ -116,6 +135,12 @@ def _loot_multiplier(loot_collected_pct: float) -> float:
     This is the weakest multiplier; it acts as a tiebreaker, not a dominant factor.
 
     loot_collected_pct: Fraction of total loot collected (0.0–1.0).
+
+    NOTE ON LEVEL REPLAY: Replayed levels have zero floor loot (see the
+    "Empty Maze" rule), so `loot_collected_pct` will always be 0.0 for those
+    runs. That correctly yields the baseline 0.5 score here — replays are
+    judged purely on speed, damage, and navigation, never penalized below
+    what an empty maze can offer.
     """
     # Linear: 0% loot = 0.5, 100% loot = 1.0
     score = 0.5 + 0.5 * loot_collected_pct
@@ -183,6 +208,12 @@ def calculate_exp_reward(
 
     Returns a structured dict with the raw EXP value, all multiplier
     components, performance verdict, star rating, and bonus gold eligibility flag.
+
+    NOTE: This formula is shared identically between standard progression runs
+    and Level Replay runs (per spec: "Standard Level EXP Scaling" must remain
+    untouched). The caller is responsible for passing the REPLAYED level's
+    original `difficulty` value on replay runs, which naturally keeps the
+    resulting EXP small relative to a high-level player's progression bar.
     """
 
     # ── FAILURE STATE ──────────────────────────────────────────────────────
@@ -252,3 +283,31 @@ def calculate_exp_reward(
         },
         "flawless_bonus_eligible": flawless,
     }
+
+
+def calculate_star_bounty(extra_stars: int, difficulty: float) -> int:
+    """
+    Computes the Gold bounty for a Level Replay run that BEATS the player's
+    historic best star rating on that level.
+
+    extra_stars: stars_earned_this_run - historic_best_stars_before_this_run.
+                 Must be > 0 for any bounty to apply (caller enforces this).
+    difficulty:  the REPLAYED level's original difficulty float (0.0–1.0),
+                 NOT the player's current difficulty. Replaying and mastering
+                 a level that was originally tougher pays out more.
+
+    WHY THIS PREVENTS FARMING:
+    The bounty is proportional to *extra* stars over the player's own
+    historic best, not to stars earned in absolute terms. Once a level's
+    level_stars entry reaches 5 (the maximum), extra_stars can never be
+    positive again, so the bounty for that level is permanently exhausted —
+    it is mathematically impossible to repeatedly farm gold from a single
+    lower-level replay.
+    """
+    if extra_stars <= 0:
+        return 0
+    difficulty = max(0.0, min(1.0, difficulty))
+    multiplier = BOUNTY_DIFFICULTY_MULTIPLIER_MIN + (
+        BOUNTY_DIFFICULTY_MULTIPLIER_MAX - BOUNTY_DIFFICULTY_MULTIPLIER_MIN
+    ) * difficulty
+    return int(round(BOUNTY_GOLD_PER_STAR * extra_stars * multiplier))
