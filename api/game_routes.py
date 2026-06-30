@@ -205,7 +205,8 @@ def complete_level():
       "gold_collected": 85,            // Actual gold picked up this run
       "diamonds_collected": 2,         // Actual diamonds picked up this run
       "is_replay": false,              // OPTIONAL — true if this was a Level Replay run
-      "replay_level": 2                // OPTIONAL — required when is_replay is true
+      "replay_level": 2,               // OPTIONAL — required when is_replay is true
+      "spells_remaining": 1            // OPTIONAL — freeze spells held at run end (cast/pickup-adjusted)
     }
 
     Returns:
@@ -252,6 +253,22 @@ def complete_level():
     loot_pct = clamp(safe_float(body["loot_collected_pct"], 0.0), 0.0, 1.0)
     gold_collected = max(0, safe_int(body["gold_collected"], 0))
     diamonds_collected = max(0, safe_int(body["diamonds_collected"], 0))
+
+    # FREEZE SPELL FIX: the gameplay engine tracks the player's held freeze
+    # spell count locally (decremented on cast, incremented on floor pickups)
+    # but previously never reported it back, so the persisted
+    # `freeze_spells_held` on the profile silently never changed across runs.
+    # `spells_remaining` is OPTIONAL so older clients keep working unchanged
+    # (the field is simply omitted from the profile update in that case).
+    # We clamp it defensively: never negative, and never above what the
+    # player's CURRENT freeze spell tier can carry — prevents a tampered
+    # client payload from inflating spell inventory beyond its real cap.
+    spells_remaining = None
+    if "spells_remaining" in body and body["spells_remaining"] is not None:
+        from core.shop_matrix import get_max_spell_carry
+        raw_spells_remaining = max(0, safe_int(body["spells_remaining"], 0))
+        max_carry = get_max_spell_carry(profile.get("freeze_spell_level", 1))
+        spells_remaining = min(raw_spells_remaining, max_carry)
 
     # REPLAY: the Empty Maze rule means there is never anything to collect.
     # We defensively zero these out server-side too, so a tampered client
@@ -351,6 +368,13 @@ def complete_level():
         "diamonds": new_diamonds,
         "level_stars": level_stars,
     }
+    # FREEZE SPELL FIX: only touch freeze_spells_held when the client actually
+    # reported an end-of-run count — omitting the key entirely (rather than
+    # writing back the stale value) keeps this endpoint backward-compatible
+    # with any caller that doesn't send `spells_remaining`.
+    if spells_remaining is not None:
+        updates["freeze_spells_held"] = spells_remaining
+
     updated_profile = update_profile(player_id, updates)
 
     # ── APPEND EXP HISTORY ────────────────────────────────────────────────
@@ -389,6 +413,10 @@ def complete_level():
             "diamonds": new_diamonds,
             "exp_history": updated_profile.get("exp_history", []),
             "level_stars": level_stars,
+            # FREEZE SPELL FIX: lets ResultTablet's `setPlayer((p) => ({ ...p,
+            # ...player_state }))` immediately reflect the correct held count
+            # without waiting for a separate profile refetch.
+            "freeze_spells_held": updated_profile.get("freeze_spells_held", profile.get("freeze_spells_held", 0)),
         },
     })
 
